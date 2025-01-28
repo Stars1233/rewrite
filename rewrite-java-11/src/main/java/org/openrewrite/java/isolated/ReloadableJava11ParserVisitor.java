@@ -26,7 +26,6 @@ import com.sun.tools.javac.tree.EndPosTable;
 import com.sun.tools.javac.tree.JCTree;
 import com.sun.tools.javac.tree.JCTree.*;
 import com.sun.tools.javac.util.Context;
-import lombok.Generated;
 import org.jspecify.annotations.Nullable;
 import org.openrewrite.Cursor;
 import org.openrewrite.ExecutionContext;
@@ -49,7 +48,6 @@ import java.lang.reflect.Field;
 import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -346,6 +344,8 @@ public class ReloadableJava11ParserVisitor extends TreePathScanner<J, Space> {
                         ),
                         Markers.EMPTY
                 ),
+                null,
+                null,
                 JContainer.build(sourceBefore(":"), convertStatements(node.getStatements()), Markers.EMPTY),
                 null
         );
@@ -1911,7 +1911,10 @@ public class ReloadableJava11ParserVisitor extends TreePathScanner<J, Space> {
         }
 
         //noinspection ConstantConditions
-        return sym != null && ("lombok.val".equals(sym.getQualifiedName().toString()) || sym.getAnnotation(Generated.class) != null);
+        return sym != null && (
+                "lombok.val".equals(sym.getQualifiedName().toString()) ||
+                sym.getDeclarationAttributes().stream().anyMatch(a -> "lombok.Generated".equals(a.type.toString()))
+        );
     }
 
     /**

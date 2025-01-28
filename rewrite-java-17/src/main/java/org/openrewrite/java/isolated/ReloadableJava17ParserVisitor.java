@@ -26,7 +26,6 @@ import com.sun.tools.javac.tree.EndPosTable;
 import com.sun.tools.javac.tree.JCTree;
 import com.sun.tools.javac.tree.JCTree.*;
 import com.sun.tools.javac.util.Context;
-import lombok.Generated;
 import org.jspecify.annotations.Nullable;
 import org.openrewrite.Cursor;
 import org.openrewrite.ExecutionContext;
@@ -355,6 +354,8 @@ public class ReloadableJava17ParserVisitor extends TreePathScanner<J, Space> {
                                 convertAll(node.getExpressions(), commaDelim, t -> EMPTY),
                         Markers.EMPTY
                 ),
+                null,
+                null,
                 JContainer.build(
                         sourceBefore(type == J.Case.Type.Rule ? "->" : ":"),
                         convertStatements(node.getStatements()),
@@ -1255,7 +1256,7 @@ public class ReloadableJava17ParserVisitor extends TreePathScanner<J, Space> {
         return new J.SwitchExpression(randomId(), fmt, Markers.EMPTY,
                 convert(node.getExpression()),
                 new J.Block(randomId(), sourceBefore("{"), Markers.EMPTY, new JRightPadded<>(false, EMPTY, Markers.EMPTY),
-                        convertAll(node.getCases(), noDelim, noDelim), sourceBefore("}")));
+                        convertAll(node.getCases(), noDelim, noDelim), sourceBefore("}")), typeMapping.type(node));
     }
 
     @Override
@@ -1996,7 +1997,10 @@ public class ReloadableJava17ParserVisitor extends TreePathScanner<J, Space> {
         }
 
         //noinspection ConstantConditions
-        return sym != null && ("lombok.val".equals(sym.getQualifiedName().toString()) || sym.getAnnotation(Generated.class) != null);
+        return sym != null && (
+                "lombok.val".equals(sym.getQualifiedName().toString()) ||
+                sym.getDeclarationAttributes().stream().anyMatch(a -> "lombok.Generated".equals(a.type.toString()))
+        );
     }
 
     /**
