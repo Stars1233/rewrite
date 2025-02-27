@@ -100,6 +100,33 @@ class UpgradeDependencyVersionTest implements RewriteTest {
     }
 
     @Test
+    void fromMilestoneToLatestPatch() {
+        rewriteRun(
+          spec -> spec.beforeRecipe(withToolingApi())
+            .recipe(new UpgradeDependencyVersion("org.apache.tomcat.embed", "*", "latest.patch", null)),
+          //language=groovy
+          buildGradle(
+            """
+              plugins { id 'java' }
+              repositories { mavenCentral() }
+
+              dependencies {
+                  implementation 'org.apache.tomcat.embed:tomcat-embed-core:10.0.0-M1'
+              }
+              """,
+            """
+              plugins { id 'java' }
+              repositories { mavenCentral() }
+
+              dependencies {
+                  implementation 'org.apache.tomcat.embed:tomcat-embed-core:10.0.27'
+              }
+              """
+          )
+        );
+    }
+
+    @Test
     void mockitoTestImplementation() {
         rewriteRun(recipeSpec -> {
               recipeSpec.beforeRecipe(withToolingApi())
@@ -370,6 +397,82 @@ class UpgradeDependencyVersionTest implements RewriteTest {
 
     @Test
     void upgradesVariablesDefinedInExtraProperties() {
+        rewriteRun(
+          buildGradle(
+            """
+              plugins {
+                  id "java"
+              }
+
+              repositories {
+                  mavenCentral()
+              }
+
+              ext {
+                  guavaVersion2 = "29.0-jre"
+              }
+
+              dependencies {
+                  implementation "com.google.guava:guava:${guavaVersion2}"
+              }
+              """,
+            """
+              plugins {
+                  id "java"
+              }
+
+              repositories {
+                  mavenCentral()
+              }
+
+              ext {
+                  guavaVersion2 = "30.1.1-jre"
+              }
+
+              dependencies {
+                  implementation "com.google.guava:guava:${guavaVersion2}"
+              }
+              """
+          )
+        );
+    }
+
+    @Test
+    void upgradesVariablesDefinedInExtraPropertiesInBuildscript() {
+        rewriteRun(
+          buildGradle(
+            """
+              buildscript {
+                  ext {
+                      guavaVersion = "29.0-jre"
+                  }
+                  repositories {
+                      mavenCentral()
+                  }
+                  dependencies {
+                      classpath("com.google.guava:guava:${guavaVersion}")
+                  }
+              }
+              """,
+            """
+              buildscript {
+                  ext {
+                      guavaVersion = "30.1.1-jre"
+                  }
+                  repositories {
+                      mavenCentral()
+                  }
+                  dependencies {
+                      classpath("com.google.guava:guava:${guavaVersion}")
+                  }
+              }
+              """
+          )
+        );
+    }
+
+    @Test
+    void upgradesVariablesDefinedInExtraPropertiesAlsoInBuildscript() {
         rewriteRun(
           buildGradle(
             """
@@ -1155,6 +1258,32 @@ class UpgradeDependencyVersionTest implements RewriteTest {
               version='ORC-246-1-SNAPSHOT'
               dependencies {
                 implementation "com.veon.eurasia.oraculum:jira-api:$version"
+              }
+              """
+          )
+        );
+    }
+
+    @Test
+    void cannotDownloadMetaDataWhenNoRepositoriesAreDefined() {
+        rewriteRun(
+          buildGradle(
+            """
+              plugins {
+                id 'java-library'
+              }
+
+              dependencies {
+                implementation "com.google.guava:guava:29.0-jre"
+              }
+              """,
+            """
+              plugins {
+                id 'java-library'
+              }
+
+              dependencies {
+                /*~~(com.google.guava:guava failed. Unable to download metadata.)~~>*/implementation "com.google.guava:guava:29.0-jre"
               }
               """
           )
