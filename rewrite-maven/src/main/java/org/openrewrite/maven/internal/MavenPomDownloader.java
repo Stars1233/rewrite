@@ -539,6 +539,11 @@ public class MavenPomDownloader {
         GroupArtifactVersion originalGav = gav;
         gav = handleSnapshotTimestampVersion(gav);
         List<String> uris = new ArrayList<>();
+
+        // Keep the repo and resolved GAV of the found JAR to avoid throwing if JAR is found
+        MavenRepository foundJarInRepo = null;
+        ResolvedGroupArtifactVersion foundResolvedGav = null;
+
         for (MavenRepository repo : normalizedRepos) {
             ctx.getResolutionListener().repository(repo, containingPom);
             //noinspection DataFlowIssue
@@ -563,81 +568,89 @@ public class MavenPomDownloader {
                     try {
                         File pomFile = new File(uri);
                         File jarFile = pomFile.toPath().resolveSibling(gav.getArtifactId() + '-' + versionMaybeDatedSnapshot + ".jar").toFile();
-
+                        boolean jarFileExists = jarFile.exists();
+                        boolean pomFileExists = pomFile.exists();
                         //NOTE:
                         // - The pom may exist without a .jar artifact if the pom packaging is "pom"
                         // - The jar may exist without a pom, if manually installed
-                        if (!pomFile.exists() && !jarFile.exists()) {
+                        if (!pomFileExists && !jarFileExists) {
                             continue;
                         }
 
-                        RawPom rawPom;
-                        if (pomFile.exists()) {
+                        // If non-empty JAR found in local repo keep the repo and resolved GAV
+                        if (foundJarInRepo == null && jarFile.length() > 0) {
+                            foundJarInRepo = repo;
+                            foundResolvedGav = resolvedGav;
+                        }
+
+                        if (pomFileExists) {
                             try (FileInputStream fis = new FileInputStream(pomFile)) {
-                                rawPom = RawPom.parse(fis, Objects.equals(versionMaybeDatedSnapshot, gav.getVersion()) ? null : versionMaybeDatedSnapshot);
+                                RawPom rawPom = RawPom.parse(fis, Objects.equals(versionMaybeDatedSnapshot, gav.getVersion()) ? null : versionMaybeDatedSnapshot);
+                                Pom pom = rawPom.toPom(inputPath, repo).withGav(resolvedGav);
+
+                                if (pom.getPackaging() == null || pom.hasJarPackaging()) {
+                                    if (!jarFileExists || jarFile.length() == 0) {
+                                        // The jar has not been downloaded, making this dependency unusable.
+                                        continue;
+                                    }
+                                }
+
+                                if (repo.getUri().equals(MavenRepository.MAVEN_LOCAL_DEFAULT.getUri())) {
+                                    // so that the repository path is the same regardless of username
+                                    pom = pom.withRepository(MavenRepository.MAVEN_LOCAL_USER_NEUTRAL);
+                                }
+
+                                if (!Objects.equals(versionMaybeDatedSnapshot, pom.getVersion())) {
+                                    pom = pom.withGav(pom.getGav().withDatedSnapshotVersion(versionMaybeDatedSnapshot));
+                                }
+                                mavenCache.putPom(resolvedGav, pom);
+                                ctx.getResolutionListener().downloadSuccess(resolvedGav, containingPom);
+                                sample.stop(timer.tags("outcome", "from maven local").register(Metrics.globalRegistry));
+                                return pom;
                             }
                         } else {
                             // Record the absense of the pom file
                             ctx.getResolutionListener().downloadError(gav, uris, (containingPom == null) ? null : containingPom.getRequested());
-                            // infer rawPom from jar
-                            rawPom = rawPomFromGav(gav);
                         }
-
-                        Pom pom = rawPom.toPom(inputPath, repo).withGav(resolvedGav);
-
-                        if (pom.getPackaging() == null || pom.hasJarPackaging()) {
-                            if (!jarFile.exists() || jarFile.length() == 0) {
-                                // The jar has not been downloaded, making this dependency unusable.
-                                continue;
-                            }
-                        }
-
-                        if (repo.getUri().equals(MavenRepository.MAVEN_LOCAL_DEFAULT.getUri())) {
-                            // so that the repository path is the same regardless of username
-                            pom = pom.withRepository(MavenRepository.MAVEN_LOCAL_USER_NEUTRAL);
-                        }
-
-                        if (!Objects.equals(versionMaybeDatedSnapshot, pom.getVersion())) {
-                            pom = pom.withGav(pom.getGav().withDatedSnapshotVersion(versionMaybeDatedSnapshot));
-                        }
-                        mavenCache.putPom(resolvedGav, pom);
-                        ctx.getResolutionListener().downloadSuccess(resolvedGav, containingPom);
-                        sample.stop(timer.tags("outcome", "from maven local").register(Metrics.globalRegistry));
-                        return pom;
                     } catch (IOException e) {
                         // unable to read the pom from a file-based repository.
                         repositoryResponses.put(repo, e.getMessage());
                     }
                 } else {
                     try {
-                        RawPom rawPom;
                         try {
                             byte[] responseBody = requestAsAuthenticatedOrAnonymous(repo, uri.toString());
-                            rawPom = RawPom.parse(
+
+                            Path inputPath = Paths.get(gav.getGroupId(), gav.getArtifactId(), gav.getVersion());
+                            RawPom rawPom = RawPom.parse(
                                     new ByteArrayInputStream(responseBody),
                                     Objects.equals(versionMaybeDatedSnapshot, gav.getVersion()) ? null : versionMaybeDatedSnapshot
                             );
+                            Pom pom = rawPom.toPom(inputPath, repo).withGav(resolvedGav);
+                            if (!Objects.equals(versionMaybeDatedSnapshot, pom.getVersion())) {
+                                pom = pom.withGav(pom.getGav().withDatedSnapshotVersion(versionMaybeDatedSnapshot));
+                            }
+                            mavenCache.putPom(resolvedGav, pom);
+                            ctx.getResolutionListener().downloadSuccess(resolvedGav, containingPom);
+                            sample.stop(timer.tags("outcome", "downloaded").register(Metrics.globalRegistry));
+                            return pom;
                         } catch (HttpSenderResponseException e) {
                             repositoryResponses.put(repo, e.getMessage());
                             // When `pom` is not found, try to see if `jar` exists for the same GAV
                             if (!e.isClientSideException() || !jarExistsForPomUri(repo, uri.toString())) {
                                 throw e;
                             }
+
+                            // JAR has been found but not the POM. Keep the repo and GAV if not already kept
+                            if (foundJarInRepo == null) {
+                                foundJarInRepo = repo;
+                                foundResolvedGav = resolvedGav;
+                            }
+
                             // Record the absense of the pom file
                             ctx.getResolutionListener().downloadError(gav, uris, (containingPom == null) ? null : containingPom.getRequested());
 
-                            // Continue with a recreated pom
-                            rawPom = rawPomFromGav(gav);
                         }
-                        Path inputPath = Paths.get(gav.getGroupId(), gav.getArtifactId(), gav.getVersion());
-                        Pom pom = rawPom.toPom(inputPath, repo).withGav(resolvedGav);
-                        if (!Objects.equals(versionMaybeDatedSnapshot, pom.getVersion())) {
-                            pom = pom.withGav(pom.getGav().withDatedSnapshotVersion(versionMaybeDatedSnapshot));
-                        }
-                        mavenCache.putPom(resolvedGav, pom);
-                        ctx.getResolutionListener().downloadSuccess(resolvedGav, containingPom);
-                        sample.stop(timer.tags("outcome", "downloaded").register(Metrics.globalRegistry));
-                        return pom;
                     } catch (HttpSenderResponseException e) {
                         repositoryResponses.put(repo, e.getMessage());
                         if (e.isClientSideException()) {
@@ -655,16 +668,30 @@ public class MavenPomDownloader {
                 repositoryResponses.put(repo, "Did not attempt to download because of a previous failure to retrieve from this repository.");
             }
         }
-        ctx.getResolutionListener().downloadError(gav, uris, (containingPom == null) ? null : containingPom.getRequested());
-        sample.stop(timer.tags("outcome", "unavailable").register(Metrics.globalRegistry));
-        throw new MavenDownloadingException("Unable to download POM: " + gav + '.', null, originalGav)
-                .setRepositoryResponses(repositoryResponses);
+        if (foundJarInRepo != null && foundResolvedGav != null) {
+            // IF JAR has been found return the artificially created POM not to throw exception
+            RawPom rawPom = rawPomFromGav(gav);
+            Path inputPath = Paths.get(gav.getGroupId(), gav.getArtifactId(), gav.getVersion());
+            Pom pom = rawPom.toPom(inputPath, foundJarInRepo).withGav(foundResolvedGav);
+            if (!Objects.equals(versionMaybeDatedSnapshot, pom.getVersion())) {
+                pom = pom.withGav(pom.getGav().withDatedSnapshotVersion(versionMaybeDatedSnapshot));
+            }
+            mavenCache.putPom(foundResolvedGav, pom);
+            ctx.getResolutionListener().downloadSuccess(foundResolvedGav, containingPom);
+            sample.stop(timer.tags("outcome", "downloaded").register(Metrics.globalRegistry));
+            return pom;
+        } else {
+            ctx.getResolutionListener().downloadError(gav, uris, (containingPom == null) ? null : containingPom.getRequested());
+            sample.stop(timer.tags("outcome", "unavailable").register(Metrics.globalRegistry));
+            throw new MavenDownloadingException("Unable to download POM: " + gav + '.', null, originalGav)
+                    .setRepositoryResponses(repositoryResponses);
+        }
     }
 
     private RawPom rawPomFromGav(GroupArtifactVersion gav) {
         return new RawPom(null, null, gav.getGroupId(), gav.getArtifactId(), gav.getVersion(), null,
                 null, null, null, "jar", null, null, null,
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null);
     }
 
     /**
@@ -702,6 +729,23 @@ public class MavenPomDownloader {
                 //This can happen if the artifact only exists in the local maven cache. In this case, just return the original
                 return gav.getVersion();
             }
+
+            // Find the newest <snapshotVersion> with a matching classifier - the latest snapshot may not have artifacts for all classifiers.
+            List<MavenMetadata.SnapshotVersion> snapshotVersions = mavenMetadata.getVersioning().getSnapshotVersions();
+            if (snapshotVersions != null) {
+                // Try to get requested classifier (this is unfortunately not present in 'gav' structure)
+                String classifier = getClassifierFromContainingPom(gav, containingPom);
+                MavenMetadata.SnapshotVersion snapshotVersion = snapshotVersions.stream()
+                        .sorted(Comparator.comparing(MavenMetadata.SnapshotVersion::getUpdated).reversed())
+                        .filter(s -> Objects.equals(s.getClassifier(), classifier))
+                        .findFirst()
+                        .orElse(null);
+                if (snapshotVersion != null) {
+                    return snapshotVersion.getValue();
+                }
+            }
+
+            // Replace SNAPSHOT suffix with timestamp and build number
             MavenMetadata.Snapshot snapshot = mavenMetadata.getVersioning().getSnapshot();
             if (snapshot != null && snapshot.getTimestamp() != null) {
                 return gav.getVersion().replaceFirst("SNAPSHOT$", snapshot.getTimestamp() + "-" + snapshot.getBuildNumber());
@@ -715,16 +759,17 @@ public class MavenPomDownloader {
             List<MavenRepository> repositories,
             @Nullable ResolvedPom containingPom,
             @Nullable String acceptsVersion) {
-        LinkedHashMap<String, MavenRepository> normalizedRepositories = new LinkedHashMap<>();
-        if (addLocalRepository) {
-            normalizedRepositories.put(ctx.getLocalRepository().getId(), ctx.getLocalRepository());
+        // Temporary guard for the introduction of pluginRepositories to ResolvedPom,
+        //  which on older LSTs will be null.
+        //noinspection ConstantValue
+        if (repositories == null) {
+            repositories = emptyList();
         }
 
-        for (MavenRepository repo : repositories) {
-            MavenRepository normalizedRepo = normalizeRepository(repo, ctx, containingPom);
-            if (normalizedRepo != null && (acceptsVersion == null || repositoryAcceptsVersion(normalizedRepo, acceptsVersion, containingPom))) {
-                normalizedRepositories.put(normalizedRepo.getId(), normalizedRepo);
-            }
+        LinkedHashMap<String, MavenRepository> normalizedRepositories = new LinkedHashMap<>();
+
+        if (addLocalRepository) {
+            normalizedRepositories.put(ctx.getLocalRepository().getId(), ctx.getLocalRepository());
         }
 
         // repositories from maven settings
@@ -734,12 +779,21 @@ public class MavenPomDownloader {
                 normalizedRepositories.put(normalizedRepo.getId(), normalizedRepo);
             }
         }
+
+        for (MavenRepository repo : repositories) {
+            MavenRepository normalizedRepo = normalizeRepository(repo, ctx, containingPom);
+            if (normalizedRepo != null && (acceptsVersion == null || repositoryAcceptsVersion(normalizedRepo, acceptsVersion, containingPom))) {
+                normalizedRepositories.put(normalizedRepo.getId(), normalizedRepo);
+            }
+        }
+
         if (!normalizedRepositories.containsKey(MavenRepository.MAVEN_CENTRAL.getId()) && addCentralRepository) {
             MavenRepository normalizedRepo = normalizeRepository(MavenRepository.MAVEN_CENTRAL, ctx, containingPom);
             if (normalizedRepo != null) {
                 normalizedRepositories.put(normalizedRepo.getId(), normalizedRepo);
             }
         }
+
         return normalizedRepositories.values();
     }
 
@@ -792,6 +846,8 @@ public class MavenPomDownloader {
 
                 mavenCache.putNormalizedRepository(repository, normalized);
                 result = Optional.ofNullable(normalized);
+            } else if (!result.isPresent()) {
+                ctx.getResolutionListener().repositoryAccessFailedPreviously(repository.getUri());
             }
         } catch (Exception e) {
             ctx.getResolutionListener().repositoryAccessFailed(repository.getUri(), e);
@@ -893,7 +949,7 @@ public class MavenPomDownloader {
             } catch (FailsafeException failsafeException) {
                 Throwable cause = failsafeException.getCause();
                 if (cause instanceof HttpSenderResponseException && hasCredentials(repo) &&
-                        ((HttpSenderResponseException) cause).isClientSideException()) {
+                    ((HttpSenderResponseException) cause).isClientSideException()) {
                     return Failsafe.with(retryPolicy).get(() -> {
                         HttpSender.Request unauthenticated = httpSender.get(jarUrl).build();
                         try (HttpSender.Response response = httpSender.send(unauthenticated)) {
@@ -1054,4 +1110,27 @@ public class MavenPomDownloader {
         String artifactPomFile = gav.getArtifactId() + "-" + versionPath.getFileName() + ".pom";
         return Files.exists(dir.resolve(versionPath.resolve(artifactPomFile)));
     }
+
+    /**
+     * Retrieves the classifier of a dependency from a provided resolved POM, if it exists.
+     *
+     * @param gav           The group, artifact, and version information of the dependency to locate.
+     * @param containingPom The resolved POM that potentially contains the dependency information.
+     *                      If null, the method will return null.
+     * @return The classifier of the dependency within the provided POM, or null if no matching
+     * dependency or classifier is found.
+     */
+    private static @Nullable String getClassifierFromContainingPom(GroupArtifactVersion gav, @Nullable ResolvedPom containingPom) {
+        if (containingPom != null) {
+            for (Dependency dep : containingPom.getRequestedDependencies()) {
+                if (Objects.equals(dep.getGroupId(), gav.getGroupId())) {
+                    if (Objects.equals(dep.getArtifactId(), gav.getArtifactId())) {
+                        return dep.getClassifier();
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
 }
