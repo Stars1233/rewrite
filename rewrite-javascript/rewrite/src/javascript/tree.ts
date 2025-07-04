@@ -30,6 +30,7 @@ export namespace JS {
         Alias: "org.openrewrite.javascript.tree.JS$Alias",
         ArrayBindingPattern: "org.openrewrite.javascript.tree.JS$ArrayBindingPattern",
         ArrowFunction: "org.openrewrite.javascript.tree.JS$ArrowFunction",
+        As: "org.openrewrite.javascript.tree.JS$As",
         AssignmentOperation: "org.openrewrite.javascript.tree.JS$AssignmentOperation",
         Await: "org.openrewrite.javascript.tree.JS$Await",
         Binary: "org.openrewrite.javascript.tree.JS$Binary",
@@ -56,6 +57,7 @@ export namespace JS {
         IndexedAccessTypeIndexType: "org.openrewrite.javascript.tree.JS$IndexedAccessType$IndexType",
         InferType: "org.openrewrite.javascript.tree.JS$InferType",
         Intersection: "org.openrewrite.javascript.tree.JS$Intersection",
+        FunctionCall: "org.openrewrite.javascript.tree.JS$FunctionCall",
         ForInLoop: "org.openrewrite.javascript.tree.JS$ForInLoop",
         ForOfLoop: "org.openrewrite.javascript.tree.JS$ForOfLoop",
         JsxEmbeddedExpression: "org.openrewrite.javascript.tree.JSX$EmbeddedExpression",
@@ -73,14 +75,14 @@ export namespace JS {
         NamedExports: "org.openrewrite.javascript.tree.JS$NamedExports",
         NamedImports: "org.openrewrite.javascript.tree.JS$NamedImports",
         NamespaceDeclaration: "org.openrewrite.javascript.tree.JS$NamespaceDeclaration",
-        ObjectBindingDeclarations: "org.openrewrite.javascript.tree.JS$ObjectBindingDeclarations",
+        ObjectBindingPattern: "org.openrewrite.javascript.tree.JS$ObjectBindingPattern",
         PropertyAssignment: "org.openrewrite.javascript.tree.JS$PropertyAssignment",
         SatisfiesExpression: "org.openrewrite.javascript.tree.JS$SatisfiesExpression",
         ScopedVariableDeclarations: "org.openrewrite.javascript.tree.JS$ScopedVariableDeclarations",
         StatementExpression: "org.openrewrite.javascript.tree.JS$StatementExpression",
         TaggedTemplateExpression: "org.openrewrite.javascript.tree.JS$TaggedTemplateExpression",
         TemplateExpression: "org.openrewrite.javascript.tree.JS$TemplateExpression",
-        TemplateExpressionSpan: "org.openrewrite.javascript.tree.JS$TemplateExpression$TemplateSpan",
+        TemplateExpressionSpan: "org.openrewrite.javascript.tree.JS$TemplateExpression$Span",
         TrailingTokenStatement: "org.openrewrite.javascript.tree.JS$TrailingTokenStatement",
         Tuple: "org.openrewrite.javascript.tree.JS$Tuple",
         TypeDeclaration: "org.openrewrite.javascript.tree.JS$TypeDeclaration",
@@ -128,6 +130,17 @@ export namespace JS {
         readonly typeParameters?: J.TypeParameters;
         readonly lambda: J.Lambda;
         readonly returnTypeExpression?: TypeTree;
+    }
+
+    /**
+     * Represents an "as" expression, used for type assertions or casting.
+     * @example const x = value as Type;
+     */
+    export interface As extends JS, Expression, TypedTree {
+        readonly kind: typeof Kind.As;
+        readonly left: J.RightPadded<Expression>;
+        readonly right: Expression;
+        readonly type?: JavaType;
     }
 
     /**
@@ -222,9 +235,11 @@ export namespace JS {
      */
     export interface Import extends JS, Statement {
         readonly kind: typeof Kind.Import;
+        readonly modifiers: J.Modifier[];
         readonly importClause?: ImportClause;
-        readonly moduleSpecifier: J.LeftPadded<Expression>;
+        readonly moduleSpecifier?: J.LeftPadded<Expression>;
         readonly attributes?: ImportAttributes;
+        readonly initializer?: J.LeftPadded<Expression>;
     }
 
     /**
@@ -372,8 +387,8 @@ export namespace JS {
      * Represents object destructuring patterns.
      * @example const { a, b } = obj;
      */
-    export interface ObjectBindingDeclarations extends JS, Expression, TypedTree, VariableDeclarator {
-        readonly kind: typeof Kind.ObjectBindingDeclarations;
+    export interface ObjectBindingPattern extends JS, Expression, TypedTree, VariableDeclarator {
+        readonly kind: typeof Kind.ObjectBindingPattern;
         readonly leadingAnnotations: J.Annotation[];
         readonly modifiers: J.Modifier[];
         readonly typeExpression?: TypeTree;
@@ -418,18 +433,7 @@ export namespace JS {
     export interface ScopedVariableDeclarations extends JS, Statement {
         readonly kind: typeof Kind.ScopedVariableDeclarations;
         readonly modifiers: J.Modifier[];
-        readonly scope?: J.LeftPadded<ScopedVariableDeclarations.Scope>;
         readonly variables: J.RightPadded<J>[];
-    }
-
-    export namespace ScopedVariableDeclarations {
-        export const enum Scope {
-            Const = "Const",
-            Let = "Let",
-            Var = "Var",
-            Using = "Using",
-            Import = "Import"
-        }
     }
 
     /**
@@ -654,6 +658,21 @@ export namespace JS {
     }
 
     /**
+     * Represents function calls which are not method invocations.
+     * @example f(5, 0, 4)
+     * @example f?.(5, 0, 4)
+     * @example data["key"](5, 0, 4)
+     * @example (() => { return 3 + 5 })()
+     */
+    export interface FunctionCall extends JS, Expression {
+        readonly kind: typeof Kind.FunctionCall;
+        readonly function?: J.RightPadded<Expression>;
+        readonly typeParameters?: J.Container<Expression>;
+        readonly arguments: J.Container<Expression>;
+        readonly functionType?: JavaType.Method;
+    }
+
+    /**
      * Represents the `void` operator.
      * @example void 0;
      */
@@ -742,10 +761,10 @@ export namespace JS {
     }
 
     export namespace NamespaceDeclaration {
-        export enum KeywordType {
-            Namespace,
-            Module,
-            Empty,
+        export const enum KeywordType {
+            Namespace = "Namespace",
+            Module = "Module",
+            Empty = "Empty"
         }
     }
 
